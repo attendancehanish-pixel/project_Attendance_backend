@@ -1,0 +1,652 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  userRoles UserRole[]
+
+  refreshTokens RefreshToken[]
+  resetTokens   PasswordResetToken[]
+
+  staff Staff?
+
+  markedAttendance      StudentAttendance[]    @relation("AttendanceMarker")
+  correctionRequests    AttendanceCorrection[] @relation("CorrectionRequester")
+  correctionReviews     AttendanceCorrection[] @relation("CorrectionReviewer")
+  auditLogs             AttendanceAuditLog[]   @relation("AttendanceAuditActor")
+  attendanceAdjustments AttendanceAdjustment[] @relation("AdjustmentCreator")
+  approvedStaffLeaves   StaffLeave[]           @relation("LeaveApprover")
+}
+
+model Staff {
+  id            String    @id @default(uuid())
+  userId        String    @unique
+  employeeCode  String    @unique
+  designation   String?
+  department    String?
+  dateOfJoining DateTime?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  subjectAssignments      StaffSubjectAssignment[]
+  attendanceSessions      AttendanceSession[]      @relation("SessionStaff")
+  originalSubstitutions   PeriodSubstitution[]     @relation("OriginalStaff")
+  substituteSubstitutions PeriodSubstitution[]     @relation("SubstituteStaff")
+  staffLeaves             StaffLeave[]             @relation("StaffLeaveStaff")
+  classTeacherOf          ClassTeacher[]
+}
+
+model ClassTeacher {
+  id             String   @id @default(uuid())
+  academicYearId String
+  standardId     String
+  staffId        String
+  assignedAt     DateTime @default(now())
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+  standard     Standard     @relation(fields: [standardId], references: [id])
+  staff        Staff        @relation(fields: [staffId], references: [id])
+
+  @@unique([academicYearId, standardId]) // one class teacher per class per year
+  @@index([staffId])
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  userRoles   UserRole[]
+  permissions RolePermission[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  roles       RolePermission[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model AcademicYear {
+  id                String   @id @default(uuid())
+  name              String
+  startDate         DateTime
+  endDate           DateTime
+  status            String   @default("DRAFT")
+  attendanceStarted Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  enrollments        StudentEnrollment[]
+  subjectAllocations SubjectAllocation[]
+
+  periodConfiguration PeriodConfiguration?
+  periodOutlines      PeriodOutline[]
+  periods             Period[]
+
+  requirements         SubjectPeriodRequirement[]
+  timetableEntries     TimetableEntry[]
+  dateTimetableEntries DateSpecificTimetableEntry[]
+
+  staffLeaves        StaffLeave[]
+  attendanceSessions AttendanceSession[]
+
+  attendanceSettings AttendanceSetting?
+  timetableSettings  TimetableSetting?
+
+  weeklyHolidays       WeeklyHoliday[]
+  calendarOverrides    CalendarOverride[]
+  attendanceExceptions AttendanceException[]
+
+  adjustments   AttendanceAdjustment[]
+  classTeachers ClassTeacher[]
+}
+
+enum Weekday {
+  SUNDAY
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+}
+
+model WeeklyHoliday {
+  id             String       @id @default(uuid())
+  academicYearId String
+  weekday        Weekday
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  @@unique([academicYearId, weekday])
+  @@index([academicYearId])
+}
+
+model Standard {
+  id                   String                       @id @default(uuid())
+  code                 String                       @unique
+  name                 String
+  enrollments          StudentEnrollment[]
+  subjectAllocations   SubjectAllocation[]
+  requirements         SubjectPeriodRequirement[]
+  timetableEntries     TimetableEntry[]
+  attendanceSessions   AttendanceSession[]
+  substitutions        PeriodSubstitution[]
+  classTeachers        ClassTeacher[]
+  dateTimetableEntries DateSpecificTimetableEntry[]
+
+  @@map("standards")
+}
+
+model Student {
+  id          String                 @id @default(uuid())
+  admissionNo String                 @unique
+  name        String
+  email       String?
+  phone       String?
+  status      String                 @default("ACTIVE")
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  enrollments StudentEnrollment[]
+  leaves      StudentLeave[]
+  adjustments AttendanceAdjustment[]
+}
+
+model StudentEnrollment {
+  id             String @id @default(uuid())
+  studentId      String
+  academicYearId String
+  standardId     String
+  rollNo         String
+  status         String @default("ACTIVE")
+
+  createdAt    DateTime            @default(now())
+  student      Student             @relation(fields: [studentId], references: [id])
+  academicYear AcademicYear        @relation(fields: [academicYearId], references: [id])
+  standard     Standard            @relation(fields: [standardId], references: [id])
+  attendance   StudentAttendance[]
+
+  @@unique([studentId, academicYearId])
+  @@unique([academicYearId, standardId, rollNo])
+  @@index([academicYearId, standardId])
+}
+
+model Subject {
+  id                 String                     @id @default(uuid())
+  code               String                     @unique
+  name               String
+  credits            Int?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+  allocations        SubjectAllocation[]
+  requirements       SubjectPeriodRequirement[]
+  timetableEntries   TimetableEntry[]
+  attendanceSessions AttendanceSession[]
+  substitutions      PeriodSubstitution[]
+
+  dateTimetableEntries DateSpecificTimetableEntry[]
+}
+
+model SubjectAllocation {
+  id             String       @id @default(uuid())
+  academicYearId String
+  standardId     String
+  subjectId      String
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  standard       Standard     @relation(fields: [standardId], references: [id])
+  subject        Subject      @relation(fields: [subjectId], references: [id])
+
+  staffAssignments StaffSubjectAssignment[]
+
+  @@unique([academicYearId, standardId, subjectId])
+}
+
+model StaffSubjectAssignment {
+  id                  String            @id @default(uuid())
+  subjectAllocationId String
+  staffId             String
+  subjectAllocation   SubjectAllocation @relation(fields: [subjectAllocationId], references: [id], onDelete: Cascade)
+  staff               Staff             @relation(fields: [staffId], references: [id])
+
+  @@unique([subjectAllocationId, staffId])
+  @@index([staffId])
+}
+
+model PeriodOutline {
+  id                String @id @default(uuid())
+  academicYearId    String
+  periodIndex       Int
+  startTime         String
+  endTime           String
+  durationMinutes   Int
+  breakAfterMinutes Int    @default(0)
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  @@unique([academicYearId, periodIndex])
+  @@index([academicYearId])
+}
+
+model PeriodConfiguration {
+  id             String @id @default(uuid())
+  academicYearId String @unique
+
+  totalPeriodCount       Int
+  defaultDurationMinutes Int?
+
+  isDurationDefault     Boolean @default(true)
+  sameOutlineForAllDays Boolean @default(true)
+
+  firstPeriodStartTime String?
+  defaultBreakMinutes  Int?
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id])
+}
+
+model Period {
+  id                 String               @id @default(uuid())
+  academicYearId     String
+  periodIndex        Int
+  startTime          String
+  endTime            String
+  weekday            Weekday?
+  academicYear       AcademicYear         @relation(fields: [academicYearId], references: [id])
+  timetableEntries   TimetableEntry[]
+  attendanceSessions AttendanceSession[]
+  staffPeriodLeaves  StaffPeriodLeave[]
+  substitutions      PeriodSubstitution[]
+
+  dateTimetableEntries DateSpecificTimetableEntry[] @relation("DateSpecificTimetableEntryPeriod")
+  exceptionStartFor    AttendanceException[]        @relation("ExceptionStartPeriod")
+  exceptionEndFor      AttendanceException[]        @relation("ExceptionEndPeriod")
+
+  @@unique([academicYearId, weekday, periodIndex])
+  @@index([academicYearId, weekday, periodIndex])
+}
+
+model SubjectPeriodRequirement {
+  id                     String       @id @default(uuid())
+  academicYearId         String
+  standardId             String
+  subjectId              String
+  requiredPeriodsPerWeek Int
+  academicYear           AcademicYear @relation(fields: [academicYearId], references: [id])
+  standard               Standard     @relation(fields: [standardId], references: [id])
+  subject                Subject      @relation(fields: [subjectId], references: [id])
+
+  @@unique([academicYearId, standardId, subjectId])
+}
+
+model TimetableEntry {
+  id                 String       @id @default(uuid())
+  academicYearId     String
+  standardId         String
+  weekday            Weekday
+  periodId           String
+  subjectId          String
+  attendanceRequired Boolean      @default(true)
+  academicYear       AcademicYear @relation(fields: [academicYearId], references: [id])
+  standard           Standard     @relation(fields: [standardId], references: [id])
+  period             Period       @relation(fields: [periodId], references: [id])
+  subject            Subject      @relation(fields: [subjectId], references: [id])
+
+  attendanceSessions AttendanceSession[]
+
+  @@unique([academicYearId, standardId, weekday, periodId])
+  @@index([academicYearId, weekday, periodId])
+}
+
+model DateSpecificTimetableEntry {
+  id                 String   @id @default(uuid())
+  academicYearId     String
+  calendarDate       DateTime
+  periodId           String
+  standardId         String
+  subjectId          String
+  attendanceRequired Boolean  @default(true)
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  period             Period              @relation("DateSpecificTimetableEntryPeriod", fields: [periodId], references: [id])
+  attendanceSessions AttendanceSession[]
+  standard           Standard            @relation(fields: [standardId], references: [id])
+  subject            Subject             @relation(fields: [subjectId], references: [id])
+
+  @@unique([academicYearId, calendarDate, periodId, standardId])
+  @@index([academicYearId, calendarDate])
+}
+
+model StaffLeave {
+  id             String             @id @default(uuid())
+  staffId        String
+  academicYearId String
+  startDate      DateTime
+  endDate        DateTime
+  leaveType      String
+  reason         String?
+  status         String             @default("PENDING")
+  approvedById   String?
+  approvedAt     DateTime?
+  staff          Staff              @relation("StaffLeaveStaff", fields: [staffId], references: [id])
+  academicYear   AcademicYear       @relation(fields: [academicYearId], references: [id])
+  approvedBy     User?              @relation("LeaveApprover", fields: [approvedById], references: [id])
+  periodLeaves   StaffPeriodLeave[]
+
+  @@index([staffId, startDate, endDate])
+}
+
+model StaffPeriodLeave {
+  id           String     @id @default(uuid())
+  staffLeaveId String
+  periodId     String
+  reason       String?
+  staffLeave   StaffLeave @relation(fields: [staffLeaveId], references: [id], onDelete: Cascade)
+  period       Period     @relation(fields: [periodId], references: [id])
+
+  @@unique([staffLeaveId, periodId])
+}
+
+model PeriodSubstitution {
+  id                String   @id @default(uuid())
+  substitutionDate  DateTime
+  periodId          String
+  standardId        String
+  subjectId         String
+  originalStaffId   String
+  substituteStaffId String
+  remarks           String?
+  period            Period   @relation(fields: [periodId], references: [id])
+  standard          Standard @relation(fields: [standardId], references: [id])
+  subject           Subject  @relation(fields: [subjectId], references: [id])
+  originalStaff     Staff    @relation("OriginalStaff", fields: [originalStaffId], references: [id])
+  substituteStaff   Staff    @relation("SubstituteStaff", fields: [substituteStaffId], references: [id])
+
+  @@unique([substitutionDate, periodId, standardId])
+}
+
+model StudentLeave {
+  id           String    @id @default(uuid())
+  studentId    String
+  startDate    DateTime
+  endDate      DateTime
+  leaveType    String
+  reason       String?
+  status       String    @default("PENDING")
+  approvedById String?
+  approvedAt   DateTime?
+  student      Student   @relation(fields: [studentId], references: [id])
+}
+
+model StudentAbsenceType {
+  id                String              @id @default(uuid())
+  name              String
+  code              String              @unique
+  isActive          Boolean             @default(true)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  attendanceRecords StudentAttendance[]
+}
+
+enum CalendarOverrideType {
+  WORKING_DAY
+  HOLIDAY
+}
+
+model CalendarOverride {
+  id             String               @id @default(uuid())
+  academicYearId String
+  calendarDate   DateTime
+  type           CalendarOverrideType
+  reason         String?
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  @@unique([academicYearId, calendarDate])
+  @@index([academicYearId, calendarDate])
+}
+
+model AttendanceExceptionCategory {
+  id          String   @id @default(uuid())
+  name        String
+  code        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  exceptions AttendanceException[]
+}
+
+enum AttendanceExceptionScope {
+  FULL_DAY
+  PERIOD_RANGE
+}
+
+model AttendanceException {
+  id             String @id @default(uuid())
+  academicYearId String
+  categoryId     String
+
+  startDate DateTime
+  endDate   DateTime
+
+  scope AttendanceExceptionScope
+
+  startPeriodId String?
+  endPeriodId   String?
+
+  reason   String?
+  isActive Boolean @default(true)
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+
+  category AttendanceExceptionCategory @relation(fields: [categoryId], references: [id])
+
+  startPeriod Period? @relation("ExceptionStartPeriod", fields: [startPeriodId], references: [id])
+
+  endPeriod Period? @relation("ExceptionEndPeriod", fields: [endPeriodId], references: [id])
+
+  @@index([academicYearId, startDate, endDate])
+}
+
+enum AttendanceSessionSource {
+  NORMAL_TIMETABLE
+  DATE_SPECIFIC_TIMETABLE
+}
+
+model AttendanceSession {
+  id             String   @id @default(uuid())
+  academicYearId String
+  attendanceDate DateTime
+  periodId       String
+  standardId     String
+  subjectId      String
+  staffId        String
+  sessionStatus  String   @default("PENDING")
+
+  source AttendanceSessionSource
+
+  timetableEntryId     String?
+  dateTimetableEntryId String?
+
+  createdAt DateTime @default(now())
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  period       Period       @relation(fields: [periodId], references: [id])
+  standard     Standard     @relation(fields: [standardId], references: [id])
+  subject      Subject      @relation(fields: [subjectId], references: [id])
+  staff        Staff        @relation("SessionStaff", fields: [staffId], references: [id])
+
+  timetableEntry TimetableEntry? @relation(fields: [timetableEntryId], references: [id])
+
+  dateTimetableEntry DateSpecificTimetableEntry? @relation(fields: [dateTimetableEntryId], references: [id])
+
+  records StudentAttendance[]
+
+  @@unique([attendanceDate, periodId, standardId])
+  @@index([staffId, attendanceDate])
+}
+
+model StudentAttendance {
+  id                  String                 @id @default(uuid())
+  attendanceSessionId String
+  enrollmentId        String
+  status              String
+  absenceTypeId       String?
+  markedById          String
+  markedAt            DateTime               @default(now())
+  session             AttendanceSession      @relation(fields: [attendanceSessionId], references: [id])
+  enrollment          StudentEnrollment      @relation(fields: [enrollmentId], references: [id])
+  absenceType         StudentAbsenceType?    @relation(fields: [absenceTypeId], references: [id])
+  markedBy            User                   @relation("AttendanceMarker", fields: [markedById], references: [id])
+  corrections         AttendanceCorrection[]
+  auditLogs           AttendanceAuditLog[]
+
+  @@unique([attendanceSessionId, enrollmentId])
+  @@index([enrollmentId])
+}
+
+model AttendanceCorrection {
+  id                 String            @id @default(uuid())
+  attendanceRecordId String
+  oldStatus          String
+  newStatus          String
+  oldAbsenceTypeId   String?
+  newAbsenceTypeId   String?
+  reason             String
+  requestedById      String
+  requestedAt        DateTime          @default(now())
+  status             String            @default("PENDING")
+  reviewedById       String?
+  reviewedAt         DateTime?
+  attendanceRecord   StudentAttendance @relation(fields: [attendanceRecordId], references: [id])
+  requestedBy        User              @relation("CorrectionRequester", fields: [requestedById], references: [id])
+  reviewedBy         User?             @relation("CorrectionReviewer", fields: [reviewedById], references: [id])
+
+  @@index([attendanceRecordId, status])
+}
+
+model AttendanceAdjustment {
+  id             String       @id @default(uuid())
+  studentId      String
+  academicYearId String
+  points         Decimal
+  reason         String
+  activityTypeId String?
+  createdById    String
+  createdAt      DateTime     @default(now())
+  student        Student      @relation(fields: [studentId], references: [id])
+  academicYear   AcademicYear @relation(fields: [academicYearId], references: [id])
+  createdBy      User         @relation("AdjustmentCreator", fields: [createdById], references: [id])
+
+  @@index([studentId, academicYearId])
+}
+
+model AttendanceAuditLog {
+  id                 String             @id @default(uuid())
+  attendanceRecordId String?
+  action             String
+  oldStatus          String?
+  newStatus          String?
+  oldAbsenceTypeId   String?
+  newAbsenceTypeId   String?
+  performedById      String
+  performedAt        DateTime           @default(now())
+  reason             String?
+  metadata           String?
+  attendanceRecord   StudentAttendance? @relation(fields: [attendanceRecordId], references: [id])
+  performedBy        User               @relation("AttendanceAuditActor", fields: [performedById], references: [id])
+
+  @@index([attendanceRecordId, performedAt])
+  @@index([performedById, performedAt])
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  title       String
+  message     String
+  type        String
+  referenceId String?
+  isRead      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([userId, isRead])
+}
+
+model TimetableSetting {
+  id                                 String       @id @default(uuid())
+  academicYearId                     String       @unique
+  excludeWeeklyHolidaysFromTimetable Boolean      @default(true)
+  academicYear                       AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+}
+
+model AttendanceSetting {
+  id               String       @id @default(uuid())
+  academicYearId   String       @unique
+  markingDeadline  String       @default("21:00")
+  allowLateMarking Boolean      @default(false)
+  academicYear     AcademicYear @relation(fields: [academicYearId], references: [id])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  usedAt    DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}

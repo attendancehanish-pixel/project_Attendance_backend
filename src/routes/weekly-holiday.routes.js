@@ -1,0 +1,10 @@
+import {Router} from 'express';
+import * as c from '../controllers/weekly-holiday.controller.js';
+import {authenticate} from '../middleware/authenticate.js';
+import {requirePermission} from '../middleware/authorize.js';
+import P from '../permissions/permission.constants.js';
+import asyncHandler from '../utils/async-handler.js';
+const r=Router();
+r.get('/:academicYearId',authenticate,requirePermission(P.CALENDAR_VIEW),asyncHandler(c.list));
+r.put('/:academicYearId',authenticate,requirePermission(P.CALENDAR_UPDATE),asyncHandler(c.replace));
+export default r;

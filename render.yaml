@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: attendance-backend
+    runtime: node
+    region: singapore
+
+    buildCommand: npm ci && npm run prisma:generate
+    preDeployCommand: npx prisma migrate deploy
+    startCommand: npm start
+
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: APP_TIMEZONE
+        value: Asia/Kolkata
+
+      - key: TZ
+        value: Asia/Kolkata
+
+      - key: TIME_MODE
+        value: REAL
+
+      - key: DATABASE_URL
+        sync: false
+
+      - key: JWT_ACCESS_SECRET
+        sync: false
+
+      - key: JWT_REFRESH_SECRET
+        sync: false
+
+      - key: FRONTEND_URL
+        sync: false

@@ -1,0 +1,39 @@
+{
+  "name": "college-attendance-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "node prisma/seed.js",
+    "format": "prettier --write .",
+    "prisma:validate": "prisma validate",
+    "prisma:format": "prisma format",
+    "check": "npm run prisma:format && npm run prisma:validate",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:status": "prisma migrate status",
+    "build": "npm run prisma:generate"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^7.0.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10",
+    "prettier": "^3.9.6",
+    "prisma": "^6.19.0"
+  }
+}

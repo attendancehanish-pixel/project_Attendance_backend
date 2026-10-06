@@ -1,0 +1,10 @@
+import { Router } from 'express';
+import * as c from '../controllers/timetable-settings.controller.js';
+import { authenticate } from '../middleware/authenticate.js';
+import { requirePermission } from '../middleware/authorize.js';
+import P from '../permissions/permission.constants.js';
+import asyncHandler from '../utils/async-handler.js';
+const r=Router();
+r.get('/:academicYearId', authenticate, requirePermission(P.TIMETABLE_VIEW), asyncHandler(c.get));
+r.patch('/:academicYearId', authenticate, requirePermission(P.TIMETABLE_SETTINGS), asyncHandler(c.update));
+export default r;
