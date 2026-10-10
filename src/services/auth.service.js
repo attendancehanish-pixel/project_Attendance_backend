@@ -2,6 +2,7 @@ import prisma from '../lib/prisma.js';
 import { signAccessToken } from '../lib/jwt.js';
 import {
   comparePassword,
+  hashPassword,
   randomToken,
   hashToken,
 } from '../utils/hash.js';
@@ -58,10 +59,37 @@ export const login = async (email, password) => {
   };
 };
 
+export const changePassword = async (userId, currentPassword, newPassword) => {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user || !user.isActive) {
+    throw new ApiError(401, 'Invalid account');
+  }
+
+  const ok = await comparePassword(currentPassword, user.passwordHash);
+  if (!ok) {
+    throw new ApiError(400, 'Current password is incorrect');
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    }),
+    // Optional: revoke other refresh tokens (log out other devices)
+    prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+  ]);
+};
+
 export { publicUser };
 
 // ✅ Add default export for convenience
 export default {
+  changePassword,
   login,
   publicUser,
 };

@@ -71,10 +71,31 @@ export const logout = async (req, res) => {
   res.json({ message: 'Logged out' });
 };
 
-// ✅ Add default export
+export const changePassword = async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) {
+    throw new ApiError(400, 'Current and new password are required');
+  }
+  if (newPassword.length < 8) {
+    throw new ApiError(400, 'New password must be at least 8 characters');
+  }
+  if (currentPassword === newPassword) {
+    throw new ApiError(400, 'New password must be different from current password');
+  }
+
+  await service.changePassword(req.user.id, currentPassword, newPassword);
+
+  // Clear refresh cookie since all tokens were revoked
+  res.clearCookie('refreshToken');
+
+  res.json({ message: 'Password changed. Please log in again.' });
+};
+
+
 export default {
   login,
   me,
   refresh,
   logout,
+  changePassword,
 };

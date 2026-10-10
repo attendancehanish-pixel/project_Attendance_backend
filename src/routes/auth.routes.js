@@ -9,5 +9,10 @@ router.post('/login', asyncHandler(authController.login));
 router.get('/me', authenticate, asyncHandler(authController.me));
 router.post('/refresh', asyncHandler(authController.refresh));
 router.post('/logout', asyncHandler(authController.logout));
+router.post(
+  '/change-password',
+  authenticate,
+  asyncHandler(authController.changePassword)
+);
 
 export default router;
