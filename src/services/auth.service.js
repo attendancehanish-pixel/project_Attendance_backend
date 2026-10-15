@@ -8,6 +8,7 @@ import {
 } from '../utils/hash.js';
 import { refreshDays } from '../config/env.js';
 import { ApiError } from '../utils/api-error.js';
+import { resolvePermissions, portalFor, isPersonalRole } from '../permissions/resolve.js';
 
 const include = {
   userRoles: {
@@ -17,20 +18,20 @@ const include = {
   },
 };
 
-const publicUser = (u) => ({
-  id: u.id,
-  name: u.name,
-  email: u.email,
-  isActive: u.isActive,
-  roles: u.userRoles.map((x) => x.role.name),
-  permissions: [
-    ...new Set(
-      u.userRoles.flatMap((x) =>
-        x.role.permissions.map((p) => p.permission.name)
-      )
-    ),
-  ].sort(),
-});
+const publicUser = (u) => {
+  const permissions = resolvePermissions(u);
+  return {
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    isActive: u.isActive,
+    roles: u.userRoles.filter((x) => !isPersonalRole(x.role)).map((x) => x.role.name),
+    permissions,
+    // 'admin' = management portal (sidebar filtered by permissions),
+    // 'staff' = teacher portal.
+    portal: portalFor(u, permissions),
+  };
+};
 
 export const login = async (email, password) => {
   const user = await prisma.user.findUnique({ where: { email }, include });

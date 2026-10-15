@@ -86,5 +86,8 @@ export default Object.freeze({
   STAFF_ASSIGNMENT_CREATE: 'staff_assignment.create',
   STAFF_ASSIGNMENT_UPDATE: 'staff_assignment.update',
   STAFF_ASSIGNMENT_DELETE: 'staff_assignment.delete',
-  
+  SUBJECT_ALLOCATION_VIEW: 'subject_allocation.view',
+  SUBJECT_ALLOCATION_CREATE: 'subject_allocation.create',
+  SUBJECT_ALLOCATION_UPDATE: 'subject_allocation.update',
+  SUBJECT_ALLOCATION_DELETE: 'subject_allocation.delete',
 });

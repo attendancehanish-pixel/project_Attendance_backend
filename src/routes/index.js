@@ -25,10 +25,15 @@ import studentEnrollmentRoutes from './student-enrollment.routes.js';
 import staffTimetableRoutes from './staff-timetable.routes.js';
 import staffStudentsRoutes from './staff-students.routes.js';
 import attendanceLeaveRoutes from './attendance.leave.routes.js';
+import usersRoutes from './users.routes.js';
+import rolesRoutes, { permissionRoutes } from './roles.routes.js';
 
 const r = Router();
 
 r.use('/auth', authRoutes);
+r.use('/users', usersRoutes);
+r.use('/roles', rolesRoutes);
+r.use('/permissions', permissionRoutes);
 r.use('/academic-years', academicYearsRoutes);
 r.use('/calendar', calendarRoutes);
 r.use('/attendance', attendanceRoutes);
@@ -59,6 +64,7 @@ r.use("/staff/students", staffStudentsRoutes);
 r.use(
   '/standards',
   crud('standard', {
+    fields: ['code', 'name'],
     view: P.STANDARDS_VIEW,
     create: P.STANDARDS_CREATE,
     update: P.STANDARDS_UPDATE,
@@ -69,6 +75,7 @@ r.use(
 r.use(
   '/subjects',
   crud('subject', {
+    fields: ['code', 'name', 'credits'],
     view: P.SUBJECTS_VIEW,
     create: P.SUBJECTS_CREATE,
     update: P.SUBJECTS_UPDATE,
@@ -79,7 +86,9 @@ r.use(
 r.use(
   '/absence-types',
   crud('studentAbsenceType', {
-    view: P.ABSENCE_TYPE_VIEW,
+    fields: ['code', 'name', 'isActive'],
+    // Teachers need to read absence types while marking attendance.
+    view: [P.ABSENCE_TYPE_VIEW, P.ATTENDANCE_VIEW, P.ATTENDANCE_MARK, P.ATTENDANCE_CORRECT],
     create: P.ABSENCE_TYPE_CREATE,
     update: P.ABSENCE_TYPE_UPDATE,
     remove: P.ABSENCE_TYPE_DEACTIVATE,
@@ -89,6 +98,7 @@ r.use(
 r.use(
   '/students',
   crud('student', {
+    fields: ['admissionNo', 'name', 'email', 'phone', 'status'],
     view: P.STUDENTS_VIEW,
     create: P.STUDENTS_CREATE,
     update: P.STUDENTS_UPDATE,

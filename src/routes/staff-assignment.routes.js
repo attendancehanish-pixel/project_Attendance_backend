@@ -11,49 +11,49 @@ const router = Router();
 router.get(
   '/',
   a,
-  p(P.STAFF_ASSIGNMENT_VIEW || 'staff_assignment.view'),
+  p(P.STAFF_ASSIGNMENT_VIEW),
   ah(staffAssignmentController.list)
 );
 
 router.get(
   '/available-staff',
   a,
-  p(P.STAFF_ASSIGNMENT_VIEW || 'staff_assignment.view'),
+  p(P.STAFF_ASSIGNMENT_VIEW),
   ah(staffAssignmentController.getAvailableStaff)
 );
 
 router.post(
   '/bulk',
   a,
-  p(P.STAFF_ASSIGNMENT_CREATE || 'staff_assignment.create'),
+  p(P.STAFF_ASSIGNMENT_CREATE),
   ah(staffAssignmentController.bulkCreate)
 );
 
 router.post(
   '/',
   a,
-  p(P.STAFF_ASSIGNMENT_CREATE || 'staff_assignment.create'),
+  p(P.STAFF_ASSIGNMENT_CREATE),
   ah(staffAssignmentController.create)
 );
 
 router.get(
   '/:id',
   a,
-  p(P.STAFF_ASSIGNMENT_VIEW || 'staff_assignment.view'),
+  p(P.STAFF_ASSIGNMENT_VIEW),
   ah(staffAssignmentController.get)
 );
 
 router.patch(
   '/:id',
   a,
-  p(P.STAFF_ASSIGNMENT_UPDATE || 'staff_assignment.update'),
+  p(P.STAFF_ASSIGNMENT_UPDATE),
   ah(staffAssignmentController.update)
 );
 
 router.delete(
   '/:id',
   a,
-  p(P.STAFF_ASSIGNMENT_DELETE || 'staff_assignment.delete'),
+  p(P.STAFF_ASSIGNMENT_DELETE),
   ah(staffAssignmentController.remove)
 );
 
@@ -61,7 +61,7 @@ router.delete(
 router.get(
   '/staff/:staffId/assignments',
   a,
-  p(P.STAFF_ASSIGNMENT_VIEW || 'staff_assignment.view'),
+  p(P.STAFF_ASSIGNMENT_VIEW),
   ah(staffAssignmentController.getStaffAssignments)
 );
 
@@ -69,7 +69,7 @@ router.get(
 router.get(
   '/standard/:standardId/subject/:subjectId/assignments',
   a,
-  p(P.STAFF_ASSIGNMENT_VIEW || 'staff_assignment.view'),
+  p(P.STAFF_ASSIGNMENT_VIEW),
   ah(staffAssignmentController.getSubjectAssignments)
 );
 

@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma.js';
 import { verifyAccessToken } from '../lib/jwt.js';
+import { resolvePermissions } from '../permissions/resolve.js';
 
 async function loadUser(id) {
   return prisma.user.findUnique({
@@ -43,11 +44,4 @@ export const authenticate = async (req, res, next) => {
   }
 };
 
-export const getUserPermissions = (user) =>
-  [
-    ...new Set(
-      user.userRoles.flatMap((ur) =>
-        ur.role.permissions.map((rp) => rp.permission.name)
-      )
-    ),
-  ].sort();
+export const getUserPermissions = (user) => resolvePermissions(user);

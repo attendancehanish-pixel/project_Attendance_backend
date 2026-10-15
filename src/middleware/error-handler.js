@@ -5,6 +5,12 @@ export default (error, req, res, next) => {
     return res.status(409).json({ message: 'A unique value already exists' });
   }
 
+  if (error.code === 'P2003') {
+    return res.status(409).json({
+      message: 'This record is in use by other records and cannot be changed or deleted',
+    });
+  }
+
   if (error.code === 'P2025') {
     return res.status(404).json({ message: 'Record not found' });
   }

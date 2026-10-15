@@ -11,7 +11,7 @@ const router = Router();
 router.get(
   '/',
   a,
-  p(P.SUBJECTS_VIEW || 'subjects.view'),
+  p(P.SUBJECT_ALLOCATION_VIEW),
   ah(subjectAllocationController.list)
 );
 
@@ -19,7 +19,7 @@ router.get(
 router.get(
   '/standard/:standardId/subjects',
   a,
-  p(P.SUBJECTS_VIEW || 'subjects.view'),
+  p(P.SUBJECT_ALLOCATION_VIEW),
   ah(subjectAllocationController.getSubjectsWithStatus)
 );
 
@@ -27,7 +27,7 @@ router.get(
 router.get(
   '/standard/:standardId',
   a,
-  p(P.SUBJECTS_VIEW || 'subjects.view'),
+  p(P.SUBJECT_ALLOCATION_VIEW),
   ah(subjectAllocationController.getByStandard)
 );
 
@@ -35,7 +35,7 @@ router.get(
 router.get(
   '/standard/:standardId/available',
   a,
-  p(P.SUBJECTS_VIEW || 'subjects.view'),
+  p(P.SUBJECT_ALLOCATION_VIEW),
   ah(subjectAllocationController.getAvailableSubjects)
 );
 
@@ -43,7 +43,7 @@ router.get(
 router.patch(
   '/standard/:standardId/subject/:subjectId/toggle',
   a,
-  p(P.SUBJECTS_UPDATE || 'subjects.update'),
+  p(P.SUBJECT_ALLOCATION_UPDATE),
   ah(subjectAllocationController.toggleAllocation)
 );
 
@@ -51,42 +51,42 @@ router.patch(
 router.patch(
   '/standard/:standardId/bulk',
   a,
-  p(P.SUBJECTS_UPDATE || 'subjects.update'),
+  p(P.SUBJECT_ALLOCATION_UPDATE),
   ah(subjectAllocationController.bulkUpdate)
 );
 
 router.get(
   '/:id',
   a,
-  p(P.SUBJECTS_VIEW || 'subjects.view'),
+  p(P.SUBJECT_ALLOCATION_VIEW),
   ah(subjectAllocationController.get)
 );
 
 router.post(
   '/',
   a,
-  p(P.SUBJECTS_CREATE || 'subjects.create'),
+  p(P.SUBJECT_ALLOCATION_CREATE),
   ah(subjectAllocationController.create)
 );
 
 router.post(
   '/bulk',
   a,
-  p(P.SUBJECTS_CREATE || 'subjects.create'),
+  p(P.SUBJECT_ALLOCATION_CREATE),
   ah(subjectAllocationController.bulkCreate)
 );
 
 router.delete(
   '/:id',
   a,
-  p(P.SUBJECTS_DELETE || 'subjects.delete'),
+  p(P.SUBJECT_ALLOCATION_DELETE),
   ah(subjectAllocationController.remove)
 );
 
 router.delete(
   '/standard/:standardId/bulk',
   a,
-  p(P.SUBJECTS_DELETE || 'subjects.delete'),
+  p(P.SUBJECT_ALLOCATION_DELETE),
   ah(subjectAllocationController.bulkRemove)
 );
 

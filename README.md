@@ -97,3 +97,48 @@ Special working day: use `AcademicCalendar.dayType = WORKING_DAY` for the date. 
 
 ## Production
 See `PRODUCTION_TIME_AND_DEPLOYMENT.md`. The backend uses Asia/Kolkata as its business timezone. `GET /api/system/time` exposes the current application date/time for debugging.
+
+## Users, roles & permissions (RBAC)
+
+Administrators can create users and decide exactly what each one may do. No database
+migration is needed: this uses the existing `User`, `Role`, `Permission`, `UserRole`
+and `RolePermission` tables.
+
+| Endpoint | Permission |
+| --- | --- |
+| `GET /api/users`, `GET /api/users/:id` | `users.view` |
+| `POST /api/users` | `users.create` |
+| `PATCH /api/users/:id` (name, email, password, `roleIds`, `permissions`) | `users.update` |
+| `PATCH /api/users/:id/status` `{ isActive }` | `users.deactivate` |
+| `GET /api/roles` | `roles.view` (or `users.create/update`) |
+| `POST / PATCH / DELETE /api/roles` | `roles.create / update / delete` |
+| `GET /api/permissions` (grouped catalogue, dependencies, presets) | `roles.view` (or `users.create/update`) |
+
+How access is stored
+- A user gets **roles** (reusable bundles) and/or **specific permissions**. Specific
+  permissions are kept in a hidden per-user role named `user:<userId>`; it is never
+  listed on the Roles screen.
+- `ADMIN` is a superuser: it always has every permission defined in
+  `src/permissions/permission.constants.js`, even before the seed is re-run.
+- Granting a permission automatically grants what it needs to work (for example
+  `timetable.create` also grants `timetable.view`, `subjects.view`, `standards.view`,
+  `period.view`, `calendar.view`, `academic_year.view`). The rules live in
+  `src/permissions/permission-catalog.js`.
+- New permissions `subject_allocation.view/create/update/delete` control allocating
+  subjects to standards (previously this reused `subjects.*`).
+
+Safety rules enforced by the API
+- A non-admin can only grant permissions they hold themselves, and can never assign
+  the `ADMIN` role or modify an administrator account.
+- Nobody can change their own roles/permissions or deactivate themselves.
+- The last active administrator cannot be removed or deactivated.
+- Built-in roles (`ADMIN`, `STAFF`, `ATTENDANCE_MANAGER`) are read-only; create a new
+  role for custom bundles.
+- Permission checks that had been removed from the generic CRUD routes
+  (standards, subjects, students, absence types) are back, with a field whitelist.
+
+On startup the server inserts any permission that exists in code but not yet in the
+database. Re-running `npm run prisma:seed` is optional.
+
+`/api/auth/me` and `/api/auth/login` now also return `portal`: `"admin"` (management
+portal, menus limited to granted permissions) or `"staff"` (teacher portal).

@@ -8,7 +8,8 @@ import asyncHandler from '../utils/async-handler.js';
 const r = Router();
 r.post(
   '/academic-year/:academicYearId/generate',
-  authenticate,// or P.PERIOD_CREATE, whatever you use
+  authenticate,
+  requirePermission(P.PERIOD_CREATE),
   asyncHandler(c.generate)
 );
 

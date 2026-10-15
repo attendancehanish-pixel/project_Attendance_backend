@@ -1,7 +1,35 @@
 // controllers/staff.controller.js
 import prisma from '../lib/prisma.js';
 import bcrypt from 'bcrypt';
+import { loadAssignableRoles } from '../services/access.service.js';
+import { isPersonalRole } from '../permissions/resolve.js';
+import ROLES from '../permissions/role.constants.js';
 import { parseDateInput } from '../utils/date.js';
+
+// Never send the password hash (or internal per-user roles) to the browser.
+const safeStaff = (staff) => {
+  if (!staff?.user) return staff;
+  const { passwordHash: _omit, ...user } = staff.user;
+  if (user.userRoles) user.userRoles = user.userRoles.filter((ur) => !isPersonalRole(ur.role));
+  return { ...staff, user };
+};
+
+// A non-admin must not be able to edit / reset / deactivate an administrator
+// just because that administrator also has a staff profile.
+async function assertNotAdminTarget(actor, userId) {
+  const isActorAdmin = actor.userRoles.some((ur) => ur.role.name === ROLES.ADMIN);
+  if (isActorAdmin) return;
+  const adminRole = await prisma.userRole.findFirst({
+    where: { userId, role: { name: ROLES.ADMIN } },
+  });
+  if (adminRole) {
+    const err = new Error('Only an administrator can modify an administrator account');
+    err.status = 403;
+    throw err;
+  }
+}
+
+const normEmail = (v) => String(v || '').trim().toLowerCase();
 
 export const staffController = {
   // List all staff members with their user details
@@ -33,7 +61,7 @@ export const staffController = {
       }
     });
     
-    res.json({ data: staff });
+    res.json({ data: staff.map(safeStaff) });
   },
 
   // Get a single staff member
@@ -53,7 +81,7 @@ export const staffController = {
       }
     });
     
-    res.json({ data: staff });
+    res.json({ data: safeStaff(staff) });
   },
 
   // Create a staff member
@@ -61,15 +89,14 @@ export const staffController = {
     try {
       const { 
         name, 
-        email, 
         password, 
         roleIds, 
         employeeCode,
         designation,
         department,
-        dateOfJoining,
-        ...rest 
+        dateOfJoining
       } = req.body;
+      const email = normEmail(req.body.email);
       
       // Validate required fields
       if (!name || !email || !password || !employeeCode) {
@@ -110,7 +137,6 @@ export const staffController = {
         email,
         passwordHash,
         isActive: true,
-        ...rest,
         staff: {
           create: {
             employeeCode,
@@ -124,18 +150,9 @@ export const staffController = {
       
       // Handle roleIds - if provided and is an array
       if (roleIds && Array.isArray(roleIds) && roleIds.length > 0) {
-        // Verify roles exist
-        const roles = await prisma.role.findMany({
-          where: {
-            id: { in: roleIds }
-          }
-        });
-        
-        if (roles.length !== roleIds.length) {
-          return res.status(400).json({ 
-            error: 'One or more roles not found' 
-          });
-        }
+        // Validates existence and blocks privilege escalation (e.g. a
+        // non-admin handing out ADMIN or permissions they do not have).
+        await loadAssignableRoles(req.user, roleIds);
         
         createData.userRoles = {
           create: roleIds.map(roleId => ({
@@ -185,6 +202,7 @@ export const staffController = {
       res.status(201).json({ data: userWithoutPassword });
       
     } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message, ...(error.details ? { details: error.details } : {}) });
       console.error('Error creating staff:', error);
       res.status(500).json({ 
         error: 'Failed to create staff member',
@@ -198,16 +216,15 @@ export const staffController = {
     try {
       const { 
         name, 
-        email, 
         password, 
         roleIds,
         employeeCode,
         designation,
         department,
         dateOfJoining,
-        isActive,
-        ...rest 
+        isActive
       } = req.body;
+      const email = req.body.email !== undefined ? normEmail(req.body.email) : undefined;
       
       // First check if staff exists
       const existingStaff = await prisma.staff.findUnique({
@@ -218,6 +235,7 @@ export const staffController = {
       if (!existingStaff) {
         return res.status(404).json({ error: 'Staff member not found' });
       }
+      await assertNotAdminTarget(req.user, existingStaff.userId);
       
       // Check if email is being changed and is already taken
       if (email && email !== existingStaff.user.email) {
@@ -249,8 +267,7 @@ export const staffController = {
       const userUpdateData = {
         name: name || existingStaff.user.name,
         email: email || existingStaff.user.email,
-        isActive: isActive !== undefined ? isActive : existingStaff.user.isActive,
-        ...rest
+        isActive: isActive !== undefined ? isActive : existingStaff.user.isActive
       };
       
       // Update password if provided
@@ -260,30 +277,14 @@ export const staffController = {
       }
       
       // Handle role updates if provided
+      let replaceRoleIds = null;
       if (roleIds && Array.isArray(roleIds)) {
-        // Verify roles exist
-        if (roleIds.length > 0) {
-          const roles = await prisma.role.findMany({
-            where: {
-              id: { in: roleIds }
-            }
-          });
-          
-          if (roles.length !== roleIds.length) {
-            return res.status(400).json({ 
-              error: 'One or more roles not found' 
-            });
-          }
+        if (existingStaff.userId === req.user.id) {
+          return res.status(403).json({ error: 'You cannot change your own roles' });
         }
+        await loadAssignableRoles(req.user, roleIds);
         
-        userUpdateData.userRoles = {
-          deleteMany: {}, // Remove all existing roles
-          create: roleIds.map(roleId => ({
-            role: {
-              connect: { id: roleId }
-            }
-          }))
-        };
+        replaceRoleIds = roleIds;
       }
       
       // Update user
@@ -291,6 +292,22 @@ export const staffController = {
         where: { id: existingStaff.userId },
         data: userUpdateData
       });
+
+      if (replaceRoleIds) {
+        // Replace shared roles; keep the user's custom-permission role (user:<id>).
+        await prisma.$transaction([
+          prisma.userRole.deleteMany({
+            where: {
+              userId: existingStaff.userId,
+              role: { name: { not: { startsWith: 'user:' } } }
+            }
+          }),
+          prisma.userRole.createMany({
+            data: replaceRoleIds.map((roleId) => ({ userId: existingStaff.userId, roleId })),
+            skipDuplicates: true
+          })
+        ]);
+      }
 
       // Update staff
       const updatedStaff = await prisma.staff.update({
@@ -322,6 +339,7 @@ export const staffController = {
       res.json({ data: response });
       
     } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message, ...(error.details ? { details: error.details } : {}) });
       console.error('Error updating staff:', error);
       res.status(500).json({ 
         error: 'Failed to update staff member',
@@ -341,6 +359,10 @@ export const staffController = {
       
       if (!existingStaff) {
         return res.status(404).json({ error: 'Staff member not found' });
+      }
+      await assertNotAdminTarget(req.user, existingStaff.userId);
+      if (existingStaff.userId === req.user.id) {
+        return res.status(400).json({ error: 'You cannot deactivate your own account' });
       }
       
       // Soft delete (deactivate both staff and user)
@@ -378,6 +400,7 @@ export const staffController = {
       res.json({ data: response });
       
     } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
       console.error('Error removing staff:', error);
       res.status(500).json({ 
         error: 'Failed to remove staff member',
@@ -408,7 +431,7 @@ export const staffController = {
         return res.status(404).json({ error: 'Staff member not found' });
       }
       
-      res.json({ data: staff });
+      res.json({ data: safeStaff(staff) });
     } catch (error) {
       console.error('Error fetching staff by user ID:', error);
       res.status(500).json({ 

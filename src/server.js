@@ -8,6 +8,7 @@ import routes from './routes/index.js';
 import notFound from './middleware/not-found.js';
 import errorHandler from './middleware/error-handler.js';
 import { fileURLToPath } from 'url';
+import { syncPermissions } from './services/access.service.js';
 
 const app = express();
 
@@ -39,6 +40,8 @@ app.use(errorHandler);
 
 async function start() {
   await prisma.$connect();
+  // Make sure every permission defined in code exists in the database.
+  await syncPermissions();
   app.listen(port, '0.0.0.0', () =>
     console.log(`Backend running on port ${port} (timezone: ${APP_TIMEZONE_NAME})`)
   );

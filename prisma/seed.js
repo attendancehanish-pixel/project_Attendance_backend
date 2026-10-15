@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import P from "../src/permissions/permission.constants.js";
 import ROLE_PERMISSIONS from "../src/permissions/permission-map.js";
+import { labelOf } from "../src/permissions/permission-catalog.js";
 
 const db = new PrismaClient();
 
@@ -30,7 +31,7 @@ async function main() {
     const row = await db.permission.upsert({
       where: { name },
       update: {},
-      create: { name, description: name.replaceAll("_", " ") },
+      create: { name, description: labelOf(name) },
     });
     permissionMap[name] = row.id;
   }
