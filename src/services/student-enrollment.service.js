@@ -138,15 +138,18 @@ export const bulkEnroll = async ({ academicYearId, standardId, status, enrollmen
 
   const [students, existingByStudent, existingByRoll] = await Promise.all([
     prisma.student.findMany({
-      where: { admissionNo: { in: admissionNos } },
+      where: { OR: admissionNos.map((no) => ({ admissionNo: { equals: no, mode: 'insensitive' } })) },
       select: studentSelect,
     }),
     prisma.studentEnrollment.findMany({
       where: {
         academicYearId,
-        student: { admissionNo: { in: admissionNos } },
+        student: { OR: admissionNos.map((no) => ({ admissionNo: { equals: no, mode: 'insensitive' } })) },
       },
-      include: { student: { select: { admissionNo: true, name: true } } },
+      include: {
+        student: { select: { admissionNo: true, name: true } },
+        standard: { select: { name: true, code: true } },
+      },
     }),
     prisma.studentEnrollment.findMany({
       where: { academicYearId, standardId, rollNo: { in: rollNos } },
@@ -167,6 +170,11 @@ export const bulkEnroll = async ({ academicYearId, standardId, status, enrollmen
     const row = rows[index];
     const student = studentByAdmissionNo.get(row.admissionNo.toUpperCase());
 
+    if (student && student.status !== 'ACTIVE') {
+      conflicts.push({ row: index + 1, admissionNo: row.admissionNo, reason: `${student.name} is not an active student` });
+      continue;
+    }
+
     if (!student) {
       missingStudents.push({ row: index + 1, admissionNo: row.admissionNo });
       continue;
@@ -177,7 +185,7 @@ export const bulkEnroll = async ({ academicYearId, standardId, status, enrollmen
       conflicts.push({
         row: index + 1,
         admissionNo: row.admissionNo,
-        reason: `Student is already enrolled in ${existingStudent.academicYearId === academicYearId ? 'this academic year' : 'the selected academic year'}`,
+        reason: `${student.name} is already enrolled in ${existingStudent.standard?.name || existingStudent.standard?.code || 'a class'} (roll ${existingStudent.rollNo}) for this academic year`,
       });
       continue;
     }
@@ -275,6 +283,78 @@ export const remove = async (id) => {
   return prisma.studentEnrollment.delete({ where: { id } });
 };
 
+
+/**
+ * Type-ahead lookup used by the bulk enrolment page. Returns active students
+ * whose admission number (prefix matches first) or name matches `q`, together
+ * with their enrolment in the given academic year, so the UI can warn
+ * immediately when a student is already placed.
+ */
+export const lookupStudents = async ({ academicYearId, q, limit }) => {
+  if (!academicYearId) throw new ApiError(400, 'academicYearId is required');
+  const value = String(q || '').trim();
+  if (!value) return [];
+
+  const take = Math.min(Math.max(Number(limit) || 8, 1), 20);
+
+  const students = await prisma.student.findMany({
+    where: {
+      status: 'ACTIVE',
+      OR: [
+        { admissionNo: { contains: value, mode: 'insensitive' } },
+        { name: { contains: value, mode: 'insensitive' } },
+      ],
+    },
+    select: {
+      ...studentSelect,
+      enrollments: {
+        where: { academicYearId },
+        select: {
+          id: true,
+          rollNo: true,
+          status: true,
+          standard: { select: { id: true, code: true, name: true } },
+        },
+      },
+    },
+    orderBy: { admissionNo: 'asc' },
+    take: 50,
+  });
+
+  const upper = value.toUpperCase();
+  const rank = (s) => {
+    const no = s.admissionNo.toUpperCase();
+    if (no === upper) return 0;
+    if (no.startsWith(upper)) return 1;
+    if (no.includes(upper)) return 2;
+    return 3;
+  };
+
+  return students
+    .sort((a, b) => rank(a) - rank(b) || a.admissionNo.localeCompare(b.admissionNo, undefined, { numeric: true }))
+    .slice(0, take)
+    .map(({ enrollments, ...student }) => ({
+      ...student,
+      enrollment: enrollments[0] || null,
+    }));
+};
+
+/** Suggest the next free numeric roll number for a class. */
+export const getNextRollNo = async ({ academicYearId, standardId }) => {
+  if (!academicYearId || !standardId) {
+    throw new ApiError(400, 'academicYearId and standardId are required');
+  }
+  const rows = await prisma.studentEnrollment.findMany({
+    where: { academicYearId, standardId },
+    select: { rollNo: true },
+  });
+  const max = rows.reduce((m, r) => {
+    const n = Number.parseInt(r.rollNo, 10);
+    return Number.isFinite(n) && n > m ? n : m;
+  }, 0);
+  return { nextRollNo: String(max + 1), used: rows.map((r) => r.rollNo) };
+};
+
 export const getSetup = async (academicYearId, standardId) => {
   if (!academicYearId || !standardId) {
     throw new ApiError(400, 'academicYearId and standardId are required');
@@ -302,4 +382,6 @@ export default {
   update,
   remove,
   getSetup,
+  lookupStudents,
+  getNextRollNo,
 };

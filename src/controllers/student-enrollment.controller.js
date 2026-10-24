@@ -24,6 +24,23 @@ class StudentEnrollmentController {
     res.json({ success: true, data });
   }
 
+  async lookup(req, res) {
+    const data = await studentEnrollmentService.lookupStudents({
+      academicYearId: req.query.academicYearId,
+      q: req.query.q,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  }
+
+  async nextRollNo(req, res) {
+    const data = await studentEnrollmentService.getNextRollNo({
+      academicYearId: req.query.academicYearId,
+      standardId: req.query.standardId,
+    });
+    res.json({ success: true, data });
+  }
+
   async bulkEnroll(req, res) {
     const { academicYearId, standardId, status, enrollments } = req.body;
     const result = await studentEnrollmentService.bulkEnroll({

@@ -23,6 +23,10 @@ router.get(
   ah(studentEnrollmentController.list)
 );
 
+// Type-ahead student lookup + roll number suggestion (must precede '/:id').
+router.get('/lookup', a, p(P.STUDENTS_ENROLL), ah(studentEnrollmentController.lookup));
+router.get('/next-roll-no', a, p(P.STUDENTS_ENROLL), ah(studentEnrollmentController.nextRollNo));
+
 // Bulk enrollment used by the admin enrollment page.
 router.post(
   '/bulk',

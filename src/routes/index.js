@@ -21,6 +21,7 @@ import subjectAllocationRoutes from './subject-allocations.routes.js';
 import periodConfigurationRoutes from './period-configuration.routes.js';
 import periodRoutes from './period.routes.js';
 import dateSpecificTimetableRoutes from './date-specific-timetable.routes.js';
+import studentBulkRoutes from './student-bulk.routes.js';
 import studentEnrollmentRoutes from './student-enrollment.routes.js';
 import staffTimetableRoutes from './staff-timetable.routes.js';
 import staffStudentsRoutes from './staff-students.routes.js';
@@ -94,6 +95,8 @@ r.use(
     remove: P.ABSENCE_TYPE_DEACTIVATE,
   })
 );
+
+r.use('/students', studentBulkRoutes);
 
 r.use(
   '/students',
