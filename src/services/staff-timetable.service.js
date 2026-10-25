@@ -1,45 +1,76 @@
-import { weekdayOf, businessNow, todayKey, endOfDay, parseSchoolDateStrict } from '../utils/date.js';
+import {
+  weekdayOf,
+  businessNow,
+  todayKey,
+  startOfDay,
+  endOfDay,
+  parseSchoolDateStrict,
+} from '../utils/date.js';
 import prisma from '../lib/prisma.js';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-const WEEKDAY_MAP = [
-  "SUNDAY",
-  "MONDAY",
-  "TUESDAY",
-  "WEDNESDAY",
-  "THURSDAY",
-  "FRIDAY",
-  "SATURDAY",
+// Display order of the week. Sunday is last, but it IS supported: the admin
+// timetable can schedule any of the seven days and staff must see all of them.
+const WEEK_ORDER = [
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY',
+  'SUNDAY',
 ];
 
+const DEFAULT_WEEKDAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'];
+
 const WEEKDAY_LABELS = {
-  MONDAY: "Monday",
-  TUESDAY: "Tuesday",
-  WEDNESDAY: "Wednesday",
-  THURSDAY: "Thursday",
-  FRIDAY: "Friday",
-  SATURDAY: "Saturday",
-  SUNDAY: "Sunday",
+  MONDAY: 'Monday',
+  TUESDAY: 'Tuesday',
+  WEDNESDAY: 'Wednesday',
+  THURSDAY: 'Thursday',
+  FRIDAY: 'Friday',
+  SATURDAY: 'Saturday',
+  SUNDAY: 'Sunday',
 };
 
 /**
- * Returns the active academic year for the system.
- * Adjust the filter if you scope by school/tenant.
+ * Picks the academic year staff should see.
+ *
+ * Admins often build the timetable in a year that is not (yet) flagged ACTIVE.
+ * Requiring ACTIVE made the whole staff timetable fail with "No active
+ * academic year found". Order of preference:
+ *   1. the ACTIVE year
+ *   2. the year whose dates contain today
+ *   3. the most recent year that has timetable entries
+ *   4. the most recent year
  */
 async function getActiveAcademicYear() {
-  const year = await prisma.academicYear.findFirst({
-    where: { status: "ACTIVE" },
-    orderBy: { startDate: "desc" },
+  const active = await prisma.academicYear.findFirst({
+    where: { status: 'ACTIVE' },
+    orderBy: { startDate: 'desc' },
   });
+  if (active) return active;
 
-  if (!year) {
-    throw new Error("No active academic year found");
-  }
+  const now = businessNow();
+  const current = await prisma.academicYear.findFirst({
+    where: { startDate: { lte: now }, endDate: { gte: now }, status: { not: 'COMPLETED' } },
+    orderBy: { startDate: 'desc' },
+  });
+  if (current) return current;
 
-  return year;
+  const withTimetable = await prisma.academicYear.findFirst({
+    where: { timetableEntries: { some: {} } },
+    orderBy: { startDate: 'desc' },
+  });
+  if (withTimetable) return withTimetable;
+
+  const latest = await prisma.academicYear.findFirst({ orderBy: { startDate: 'desc' } });
+  if (latest) return latest;
+
+  throw new Error('No active academic year found');
 }
 
 async function getStaffByUserId(userId) {
@@ -49,23 +80,101 @@ async function getStaffByUserId(userId) {
   });
 
   if (!staff) {
-    throw new Error("Staff profile not found");
+    throw new Error('Staff profile not found');
   }
 
   return staff;
 }
 
 /**
- * Builds a map of periodIndex -> periodId for a given weekday,
- * using the Period table (academicYear + weekday + periodIndex).
+ * The exact (standard, subject) pairs a staff member teaches in a year.
+ * Matching on subject alone was wrong: a teacher of "Maths" in Class 5 would
+ * also be shown every other class's Maths period.
  */
-function buildPeriodMap(periods, weekday) {
-  return periods
-    .filter((p) => p.weekday === weekday)
-    .reduce((acc, p) => {
-      acc[p.periodIndex] = p;
-      return acc;
-    }, {});
+async function getStaffTeachingPairs(staffId, academicYearId) {
+  const assignments = await prisma.staffSubjectAssignment.findMany({
+    where: { staffId, subjectAllocation: { academicYearId } },
+    select: { subjectAllocation: { select: { standardId: true, subjectId: true } } },
+  });
+
+  const seen = new Set();
+  const pairs = [];
+  for (const a of assignments) {
+    const { standardId, subjectId } = a.subjectAllocation;
+    const key = `${standardId}:${subjectId}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      pairs.push({ standardId, subjectId });
+    }
+  }
+  return pairs;
+}
+
+const pairsFilter = (pairs) => ({ OR: pairs.map((p) => ({ standardId: p.standardId, subjectId: p.subjectId })) });
+
+/**
+ * Weekdays to show as grid columns, in week order.
+ *  - every weekday that has periods configured, minus weekly holidays
+ *  - plus any weekday that actually has an entry (even on a holiday)
+ *  - falls back to Monday-Friday when nothing is configured yet
+ */
+function resolveWeekdays({ periods, weeklyHolidays = [], entryWeekdays = [] }) {
+  const holidays = new Set(weeklyHolidays);
+  const days = new Set();
+
+  for (const p of periods) {
+    if (p.weekday && !holidays.has(p.weekday)) days.add(p.weekday);
+  }
+  for (const d of entryWeekdays) days.add(d);
+
+  const ordered = WEEK_ORDER.filter((d) => days.has(d));
+  return ordered.length ? ordered : DEFAULT_WEEKDAYS;
+}
+
+/**
+ * Builds the unique list of grid rows (by periodIndex). Times differ per
+ * weekday, so each row also carries `times` keyed by weekday.
+ */
+function buildPeriodList(periods) {
+  const byIndex = new Map();
+
+  for (const p of periods) {
+    if (!byIndex.has(p.periodIndex)) {
+      byIndex.set(p.periodIndex, {
+        id: p.id,
+        index: p.periodIndex,
+        startTime: p.startTime,
+        endTime: p.endTime,
+        times: {},
+      });
+    }
+    if (p.weekday) {
+      byIndex.get(p.periodIndex).times[p.weekday] = {
+        startTime: p.startTime,
+        endTime: p.endTime,
+      };
+    }
+  }
+
+  return Array.from(byIndex.values()).sort((a, b) => a.index - b.index);
+}
+
+/** Puts a cell into timetable[weekday][periodIndex]; merges clashes instead of overwriting. */
+function placeCell(timetable, weekday, periodIndex, cell) {
+  const day = (timetable[weekday] ||= {});
+  const existing = day[periodIndex];
+
+  if (!existing) {
+    day[periodIndex] = cell;
+    return;
+  }
+
+  // Same teacher, same period, two classes (e.g. combined class): show both.
+  existing.className = [existing.className, cell.className].filter(Boolean).join(', ');
+  if (existing.subject !== cell.subject) {
+    existing.subject = `${existing.subject} / ${cell.subject}`;
+  }
+  existing.merged = true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -75,30 +184,25 @@ function buildPeriodMap(periods, weekday) {
 export async function getMyWeeklyTimetable(userId) {
   const staff = await getStaffByUserId(userId);
   const year = await getActiveAcademicYear();
+  const pairs = await getStaffTeachingPairs(staff.id, year.id);
 
-  const [periods, entries, substitutions, dateEntries] = await Promise.all([
+  const [periods, weeklyHolidays, entries, substitutions, dateEntries] = await Promise.all([
     prisma.period.findMany({
       where: { academicYearId: year.id },
-      orderBy: [{ weekday: "asc" }, { periodIndex: "asc" }],
+      orderBy: [{ weekday: 'asc' }, { periodIndex: 'asc' }],
     }),
 
-    prisma.timetableEntry.findMany({
-      where: {
-        academicYearId: year.id,
-        subject: {
-          allocations: {
-            some: {
-              staffAssignments: { some: { staffId: staff.id } },
-            },
-          },
-        },
-      },
-      include: {
-        subject: true,
-        standard: true,
-        period: true,
-      },
+    prisma.weeklyHoliday.findMany({
+      where: { academicYearId: year.id },
+      select: { weekday: true },
     }),
+
+    pairs.length
+      ? prisma.timetableEntry.findMany({
+          where: { academicYearId: year.id, ...pairsFilter(pairs) },
+          include: { subject: true, standard: true, period: true },
+        })
+      : [],
 
     prisma.periodSubstitution.findMany({
       where: {
@@ -111,49 +215,41 @@ export async function getMyWeeklyTimetable(userId) {
         subject: true,
         originalStaff: { include: { user: true } },
       },
+      orderBy: { substitutionDate: 'asc' },
     }),
 
-    prisma.dateSpecificTimetableEntry.findMany({
-      where: {
-        academicYearId: year.id,
-        subject: {
-          allocations: {
-            some: {
-              staffAssignments: { some: { staffId: staff.id } },
-            },
-          },
-        },
-      },
-      include: { period: true, standard: true, subject: true },
-    }),
+    pairs.length
+      ? prisma.dateSpecificTimetableEntry.findMany({
+          where: { academicYearId: year.id, ...pairsFilter(pairs) },
+          include: { period: true, standard: true, subject: true },
+          orderBy: { calendarDate: 'asc' },
+        })
+      : [],
   ]);
 
-  // Group periods by weekday
-  const periodsByWeekday = periods.reduce((acc, p) => {
-    if (!acc[p.weekday]) acc[p.weekday] = [];
-    acc[p.weekday].push(p);
-    return acc;
-  }, {});
+  const weekdays = resolveWeekdays({
+    periods,
+    weeklyHolidays: weeklyHolidays.map((h) => h.weekday),
+    entryWeekdays: entries.map((e) => e.weekday),
+  });
 
   // Shape the normal timetable
   const timetable = {};
-  const weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"];
+  for (const weekday of weekdays) timetable[weekday] = {};
 
-  for (const weekday of weekdays) {
-    timetable[weekday] = {};
-
-    const weekdayEntries = entries.filter((e) => e.weekday === weekday);
-
-    for (const entry of weekdayEntries) {
-      timetable[weekday][entry.period.periodIndex] = {
-        classId: entry.standard.id,
-        className: entry.standard.name,
-        subject: entry.subject.name,
-        subjectId: entry.subject.id,
-        room: null, // schema has no room on TimetableEntry; add later
-        teacher: staff.user.name,
-      };
-    }
+  for (const entry of entries) {
+    placeCell(timetable, entry.weekday, entry.period.periodIndex, {
+      periodId: entry.periodId,
+      classId: entry.standard.id,
+      className: entry.standard.name,
+      subject: entry.subject.name,
+      subjectId: entry.subject.id,
+      startTime: entry.period.startTime,
+      endTime: entry.period.endTime,
+      attendanceRequired: entry.attendanceRequired,
+      room: null, // schema has no room on TimetableEntry; add later
+      teacher: staff.user.name,
+    });
   }
 
   // Summary
@@ -171,7 +267,7 @@ export async function getMyWeeklyTimetable(userId) {
     }
   }
 
-  const todayName = WEEKDAY_MAP.indexOf(weekdayOf(businessNow())) >= 0 ? weekdayOf(businessNow()) : WEEKDAY_MAP[0];
+  const todayName = weekdayOf(businessNow());
   const todayCount = Object.keys(timetable[todayName] || {}).length;
 
   return {
@@ -180,9 +276,13 @@ export async function getMyWeeklyTimetable(userId) {
       name: staff.user.name,
       employeeCode: staff.employeeCode,
     },
-    academicYear: { id: year.id, name: year.name },
+    academicYear: { id: year.id, name: year.name, status: year.status },
     weekdays,
     weekdayLabels: WEEKDAY_LABELS,
+    today: todayName,
+    // Lets the UI explain an empty grid ("no subjects assigned to you yet").
+    hasAssignments: pairs.length > 0,
+    hasPeriods: periods.length > 0,
     periods: buildPeriodList(periods),
     timetable,
     substitutions: substitutions.map((s) => ({
@@ -210,27 +310,6 @@ export async function getMyWeeklyTimetable(userId) {
   };
 }
 
-/**
- * Builds a unique list of periods (by periodIndex) for the grid rows.
- * Assumes periodIndex is consistent across weekdays.
- */
-function buildPeriodList(periods) {
-  const byIndex = new Map();
-
-  for (const p of periods) {
-    if (!byIndex.has(p.periodIndex)) {
-      byIndex.set(p.periodIndex, {
-        id: p.id,
-        index: p.periodIndex,
-        startTime: p.startTime,
-        endTime: p.endTime,
-      });
-    }
-  }
-
-  return Array.from(byIndex.values()).sort((a, b) => a.index - b.index);
-}
-
 /* ------------------------------------------------------------------ */
 /* 2. Class Timetable (complete normal timetable for one class)        */
 /* ------------------------------------------------------------------ */
@@ -243,13 +322,17 @@ export async function getClassTimetable(standardId) {
   });
 
   if (!standard) {
-    throw new Error("Class not found");
+    throw new Error('Class not found');
   }
 
-  const [periods, entries, staffAssignments] = await Promise.all([
+  const [periods, weeklyHolidays, entries, staffAssignments] = await Promise.all([
     prisma.period.findMany({
       where: { academicYearId: year.id },
-      orderBy: [{ weekday: "asc" }, { periodIndex: "asc" }],
+      orderBy: [{ weekday: 'asc' }, { periodIndex: 'asc' }],
+    }),
+    prisma.weeklyHoliday.findMany({
+      where: { academicYearId: year.id },
+      select: { weekday: true },
     }),
     prisma.timetableEntry.findMany({
       where: { academicYearId: year.id, standardId },
@@ -263,31 +346,41 @@ export async function getClassTimetable(standardId) {
     }),
   ]);
 
-  // Map subjectId -> teacher name for this class
-  const subjectTeacher = {};
+  // Map subjectId -> teacher names for this class
+  const teachersBySubject = {};
   for (const sa of staffAssignments) {
-    subjectTeacher[sa.subjectAllocation.subjectId] = sa.staff.user.name;
+    const id = sa.subjectAllocation.subjectId;
+    (teachersBySubject[id] ||= []).push(sa.staff.user.name);
   }
 
-  const timetable = {};
-  const weekdays = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"];
+  const weekdays = resolveWeekdays({
+    periods,
+    weeklyHolidays: weeklyHolidays.map((h) => h.weekday),
+    entryWeekdays: entries.map((e) => e.weekday),
+  });
 
-  for (const weekday of weekdays) {
-    timetable[weekday] = {};
-    for (const entry of entries.filter((e) => e.weekday === weekday)) {
-      timetable[weekday][entry.period.periodIndex] = {
-        subject: entry.subject.name,
-        teacher: subjectTeacher[entry.subjectId] || null,
-        room: null,
-      };
-    }
+  const timetable = {};
+  for (const weekday of weekdays) timetable[weekday] = {};
+
+  for (const entry of entries) {
+    (timetable[entry.weekday] ||= {})[entry.period.periodIndex] = {
+      periodId: entry.periodId,
+      subject: entry.subject.name,
+      subjectId: entry.subjectId,
+      teacher: (teachersBySubject[entry.subjectId] || []).join(', ') || null,
+      startTime: entry.period.startTime,
+      endTime: entry.period.endTime,
+      attendanceRequired: entry.attendanceRequired,
+      room: null,
+    };
   }
 
   return {
     standard: { id: standard.id, code: standard.code, name: standard.name },
-    academicYear: { id: year.id, name: year.name },
+    academicYear: { id: year.id, name: year.name, status: year.status },
     weekdays,
     weekdayLabels: WEEKDAY_LABELS,
+    today: weekdayOf(businessNow()),
     periods: buildPeriodList(periods),
     timetable,
   };
@@ -297,10 +390,10 @@ export async function getClassList() {
   const year = await getActiveAcademicYear();
 
   const standards = await prisma.standard.findMany({
-    orderBy: { name: "asc" },
+    orderBy: { name: 'asc' },
     include: {
       enrollments: {
-        where: { academicYearId: year.id, status: "ACTIVE" },
+        where: { academicYearId: year.id, status: 'ACTIVE' },
         select: { id: true },
       },
     },
@@ -332,19 +425,15 @@ export async function getTimetableChanges({ standardId, from, to } = {}) {
       where: {
         academicYearId: year.id,
         ...standardFilter,
-        ...(Object.keys(dateFilter).length
-          ? { calendarDate: dateFilter }
-          : {}),
+        ...(Object.keys(dateFilter).length ? { calendarDate: dateFilter } : {}),
       },
       include: { period: true, standard: true, subject: true },
-      orderBy: { calendarDate: "asc" },
+      orderBy: { calendarDate: 'asc' },
     }),
 
     prisma.periodSubstitution.findMany({
       where: {
-        ...(Object.keys(dateFilter).length
-          ? { substitutionDate: dateFilter }
-          : {}),
+        ...(Object.keys(dateFilter).length ? { substitutionDate: dateFilter } : {}),
         ...(standardId ? { standardId } : {}),
       },
       include: {
@@ -354,7 +443,7 @@ export async function getTimetableChanges({ standardId, from, to } = {}) {
         originalStaff: { include: { user: true } },
         substituteStaff: { include: { user: true } },
       },
-      orderBy: { substitutionDate: "asc" },
+      orderBy: { substitutionDate: 'asc' },
     }),
   ]);
 
@@ -368,7 +457,7 @@ export async function getTimetableChanges({ standardId, from, to } = {}) {
       subject: d.subject.name,
       teacher: null,
       room: null,
-      reason: "Date-specific timetable override",
+      reason: 'Date-specific timetable override',
     })),
     substitutions: substitutions.map((s) => ({
       id: s.id,
@@ -379,7 +468,7 @@ export async function getTimetableChanges({ standardId, from, to } = {}) {
       subject: s.subject.name,
       originalTeacher: s.originalStaff.user.name,
       substituteTeacher: s.substituteStaff.user.name,
-      reason: s.remarks || "Substitution",
+      reason: s.remarks || 'Substitution',
     })),
   };
 }
@@ -391,32 +480,23 @@ export async function getTimetableChanges({ standardId, from, to } = {}) {
 export async function getMyTodayPeriods(userId) {
   const staff = await getStaffByUserId(userId);
   const year = await getActiveAcademicYear();
+  const pairs = await getStaffTeachingPairs(staff.id, year.id);
 
-  const today = businessNow();
-  const todayName = weekdayOf(today);
+  const now = businessNow();
+  const todayName = weekdayOf(now);
+  // Date columns hold school-local midnight, so compare against that - not
+  // against "now", which never equals a stored midnight.
+  const todayStart = startOfDay(now);
 
-  const [periods, entries, substitutions, dateEntries] = await Promise.all([
-    prisma.period.findMany({
-      where: { academicYearId: year.id, weekday: todayName },
-      orderBy: { periodIndex: "asc" },
-    }),
-    prisma.timetableEntry.findMany({
-      where: {
-        academicYearId: year.id,
-        weekday: todayName,
-        subject: {
-          allocations: {
-            some: { staffAssignments: { some: { staffId: staff.id } } },
-          },
-        },
-      },
-      include: { subject: true, standard: true, period: true },
-    }),
+  const [entries, substitutions, dateEntries] = await Promise.all([
+    pairs.length
+      ? prisma.timetableEntry.findMany({
+          where: { academicYearId: year.id, weekday: todayName, ...pairsFilter(pairs) },
+          include: { subject: true, standard: true, period: true },
+        })
+      : [],
     prisma.periodSubstitution.findMany({
-      where: {
-        substituteStaffId: staff.id,
-        substitutionDate: today,
-      },
+      where: { substituteStaffId: staff.id, substitutionDate: todayStart },
       include: {
         period: true,
         standard: true,
@@ -424,28 +504,21 @@ export async function getMyTodayPeriods(userId) {
         originalStaff: { include: { user: true } },
       },
     }),
-    prisma.dateSpecificTimetableEntry.findMany({
-      where: {
-        academicYearId: year.id,
-        calendarDate: today,
-        subject: {
-          allocations: {
-            some: { staffAssignments: { some: { staffId: staff.id } } },
-          },
-        },
-      },
-      include: { period: true, standard: true, subject: true },
-    }),
+    pairs.length
+      ? prisma.dateSpecificTimetableEntry.findMany({
+          where: { academicYearId: year.id, calendarDate: todayStart, ...pairsFilter(pairs) },
+          include: { period: true, standard: true, subject: true },
+        })
+      : [],
   ]);
 
-  const periodMap = periods.reduce((acc, p) => {
-    acc[p.periodIndex] = p;
-    return acc;
-  }, {});
+  // A date-specific entry replaces the normal entry for the same class + period.
+  const overridden = new Set(dateEntries.map((d) => `${d.standardId}:${d.periodId}`));
 
   const result = [];
 
   for (const entry of entries) {
+    if (overridden.has(`${entry.standardId}:${entry.periodId}`)) continue;
     result.push({
       periodIndex: entry.period.periodIndex,
       startTime: entry.period.startTime,
@@ -453,7 +526,7 @@ export async function getMyTodayPeriods(userId) {
       classId: entry.standard.id,
       className: entry.standard.name,
       subject: entry.subject.name,
-      type: "NORMAL",
+      type: 'NORMAL',
       room: null,
       note: null,
     });
@@ -467,7 +540,7 @@ export async function getMyTodayPeriods(userId) {
       classId: sub.standard.id,
       className: sub.standard.name,
       subject: sub.subject.name,
-      type: "SUBSTITUTION",
+      type: 'SUBSTITUTION',
       room: null,
       note: `Substituting ${sub.originalStaff.user.name}`,
     });
@@ -481,16 +554,16 @@ export async function getMyTodayPeriods(userId) {
       classId: d.standard.id,
       className: d.standard.name,
       subject: d.subject.name,
-      type: "DATE_SPECIFIC",
+      type: 'DATE_SPECIFIC',
       room: null,
-      note: "Date-specific timetable",
+      note: 'Date-specific timetable',
     });
   }
 
   result.sort((a, b) => a.periodIndex - b.periodIndex);
 
   return {
-    date: todayKey(today),
+    date: todayKey(now),
     weekday: todayName,
     weekdayLabel: WEEKDAY_LABELS[todayName],
     periods: result,

@@ -433,40 +433,151 @@ export const getSetup = async (academicYearId) => {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Generate periods                                                           */
+/* Generate / re-generate periods                                             */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Builds the outline used for generation when the "same outline for all days"
+ * mode is OFF: it is derived from the saved default configuration.
+ */
+const buildOutlineFromConfiguration = (configuration) => {
+  if (!configuration.firstPeriodStartTime || !configuration.defaultDurationMinutes) {
+    throw new ApiError(
+      400,
+      'firstPeriodStartTime and defaultDurationMinutes are required to generate periods'
+    );
+  }
+
+  const duration = configuration.defaultDurationMinutes;
+  const breakMinutes = configuration.defaultBreakMinutes ?? 0;
+  const generated = [];
+  let cursor = timeToMinutes(configuration.firstPeriodStartTime);
+
+  for (let periodIndex = 1; periodIndex <= configuration.totalPeriodCount; periodIndex += 1) {
+    const end = cursor + duration;
+    generated.push({
+      periodIndex,
+      startTime: minutesToTime(cursor),
+      endTime: minutesToTime(end),
+      durationMinutes: duration,
+      breakAfterMinutes: periodIndex === configuration.totalPeriodCount ? 0 : breakMinutes,
+    });
+    cursor = end + breakMinutes;
+  }
+
+  return generated;
+};
+
+/**
+ * Resolves the outline (the list of periods every selected weekday should end
+ * up with) for the request.
+ */
+const resolveTargetOutline = async (academicYearId, configuration, sameOutlineForAllDays, outline) => {
+  if (!sameOutlineForAllDays) {
+    return { outline: buildOutlineFromConfiguration(configuration), fromRequest: false };
+  }
+
+  if (Array.isArray(outline) && outline.length > 0) {
+    return { outline: validateOutline(outline), fromRequest: true };
+  }
+
+  // No outline in the request - fall back to the persisted one.
+  const stored = await prisma.periodOutline.findMany({
+    where: { academicYearId },
+    orderBy: { periodIndex: 'asc' },
+  });
+
+  if (stored.length === 0) {
+    throw new ApiError(400, 'outline is required when sameOutlineForAllDays is enabled');
+  }
+
+  return {
+    outline: validateOutline(
+      stored.map((row) => ({
+        periodIndex: row.periodIndex,
+        startTime: row.startTime,
+        endTime: row.endTime,
+        durationMinutes: row.durationMinutes,
+      }))
+    ),
+    fromRequest: false,
+  };
+};
+
+const countsOf = (period) => ({
+  timetableEntries: period._count.timetableEntries,
+  dateTimetableEntries: period._count.dateTimetableEntries,
+  attendanceSessions: period._count.attendanceSessions,
+  substitutions: period._count.substitutions,
+  staffPeriodLeaves: period._count.staffPeriodLeaves,
+  attendanceExceptions: period._count.exceptionStartFor + period._count.exceptionEndFor,
+});
+
+// Data that can never be silently deleted: it is history (attendance) or
+// leave/substitution/exception records that point at a specific period.
+const hasProtectedData = (counts) =>
+  counts.attendanceSessions > 0 ||
+  counts.substitutions > 0 ||
+  counts.staffPeriodLeaves > 0 ||
+  counts.attendanceExceptions > 0;
+
+// Data the admin may explicitly allow us to delete (the timetable itself).
+const hasTimetableData = (counts) =>
+  counts.timetableEntries > 0 || counts.dateTimetableEntries > 0;
+
+const describeObsolete = (period) => ({
+  periodId: period.id,
+  weekday: period.weekday,
+  periodIndex: period.periodIndex,
+  ...countsOf(period),
+});
+
+/**
+ * Generates - or RE-generates - the periods of an academic year.
+ *
+ * Re-generation never deletes a period just to re-create it. Existing periods
+ * are UPDATED IN PLACE (same id), so timetable entries, date-specific entries
+ * and attendance sessions that point at them stay valid while the admin changes
+ * start/end times or ADDS periods.
+ *
+ * The only destructive case is when the new schedule has FEWER periods than
+ * the current one. Those surplus periods ("obsolete") are removed only when:
+ *   - nothing protected references them (attendance sessions, substitutions,
+ *     staff period leaves, attendance exceptions), and
+ *   - if timetable entries reference them, the caller explicitly passes
+ *     `removeObsoleteTimetable: true`.
+ *
+ * `dryRun: true` returns the plan without writing anything.
+ *
+ * `replaceExisting` is accepted for backward compatibility but is no longer
+ * needed (and no longer deletes everything).
+ */
 export const generate = async (
   academicYearId,
   {
     weekdays,
-    replaceExisting = false,
     sameOutlineForAllDays = false,
     outline = null,
+    dryRun = false,
+    removeObsoleteTimetable = false,
   } = {}
 ) => {
   await ensureAcademicYear(academicYearId);
 
-  const configuration =
-    await prisma.periodConfiguration.findUnique({
-      where: { academicYearId },
-    });
+  const configuration = await prisma.periodConfiguration.findUnique({
+    where: { academicYearId },
+  });
 
   if (!configuration) {
-    throw new ApiError(
-      400,
-      'Period configuration has not been created yet'
-    );
+    throw new ApiError(400, 'Period configuration has not been created yet');
   }
 
   /* ------------------------------------------------------------------------ */
-  /* Validate weekdays                                                        */
+  /* Weekdays                                                                 */
   /* ------------------------------------------------------------------------ */
 
   const targetWeekdays =
-    Array.isArray(weekdays) && weekdays.length > 0
-      ? weekdays
-      : VALID_WEEKDAYS;
+    Array.isArray(weekdays) && weekdays.length > 0 ? weekdays : VALID_WEEKDAYS;
 
   for (const weekday of targetWeekdays) {
     if (!VALID_WEEKDAYS.includes(weekday)) {
@@ -474,321 +585,206 @@ export const generate = async (
     }
   }
 
-  /* Remove duplicates while preserving order */
   const uniqueWeekdays = [...new Set(targetWeekdays)];
 
   /* ------------------------------------------------------------------------ */
-  /* Common outline mode                                                      */
-  /* ------------------------------------------------------------------------ */
-  if (sameOutlineForAllDays) {
-    let effectiveOutline = outline;
-
-    if (!Array.isArray(effectiveOutline) || effectiveOutline.length === 0) {
-      // No outline in the request — fall back to the persisted one.
-      const stored = await prisma.periodOutline.findMany({
-        where: { academicYearId },
-        orderBy: { periodIndex: "asc" },
-      });
-
-      if (stored.length === 0) {
-        throw new ApiError(
-          400,
-          'outline is required when sameOutlineForAllDays is enabled'
-        );
-      }
-
-      effectiveOutline = stored.map((row) => ({
-        periodIndex: row.periodIndex,
-        startTime: row.startTime,
-        endTime: row.endTime,
-        durationMinutes: row.durationMinutes,
-        breakAfterMinutes: row.breakAfterMinutes,
-      }));
-    }
-
-    const validatedOutline = validateOutline(effectiveOutline);
-
-    // NOTE: We intentionally do NOT compare validatedOutline.length against
-    // configuration.totalPeriodCount. The outline is the source of truth;
-    // the config is updated to match it inside the transaction below.
-
-    if (!replaceExisting) {
-      const existingPeriods = await prisma.period.findMany({
-        where: {
-          academicYearId,
-          weekday: {
-            in: uniqueWeekdays,
-          },
-        },
-
-        select: {
-          id: true,
-          weekday: true,
-          periodIndex: true,
-
-          _count: {
-            select: {
-              timetableEntries: true,
-              attendanceSessions: true,
-              staffPeriodLeaves: true,
-              substitutions: true,
-              dateTimetableEntries: true,
-            },
-          },
-        },
-      });
-
-      const lockedPeriods = existingPeriods.filter(
-        (period) =>
-          period._count.timetableEntries > 0 ||
-          period._count.attendanceSessions > 0 ||
-          period._count.staffPeriodLeaves > 0 ||
-          period._count.substitutions > 0 ||
-          period._count.dateTimetableEntries > 0
-      );
-
-      if (lockedPeriods.length > 0) {
-        const firstLocked = lockedPeriods[0];
-
-        throw new ApiError(
-          409,
-          `Cannot regenerate period ${firstLocked.periodIndex} on ${firstLocked.weekday} because it is already being used by timetable or attendance data`
-        );
-      }
-    }
-
-    /* ---------------------------------------------------------------------- */
-    /* Transaction                                                             */
-    /* ---------------------------------------------------------------------- */
-
-    return prisma.$transaction(async (tx) => {
-      if (replaceExisting) {
-        await tx.period.deleteMany({
-          where: {
-            academicYearId,
-            weekday: {
-              in: uniqueWeekdays,
-            },
-          },
-        });
-      }
-
-      const createdPeriods = [];
-
-      for (const weekday of uniqueWeekdays) {
-        for (const item of validatedOutline) {
-          const period = await tx.period.upsert({
-            where: {
-              academicYearId_weekday_periodIndex: {
-                academicYearId,
-                weekday,
-                periodIndex: item.periodIndex,
-              },
-            },
-
-            create: {
-              academicYearId,
-              weekday,
-              periodIndex: item.periodIndex,
-              startTime: item.startTime,
-              endTime: item.endTime,
-            },
-
-            update: {
-              startTime: item.startTime,
-              endTime: item.endTime,
-            },
-          });
-
-          createdPeriods.push(period);
-        }
-      }
-
-      /*
-       * Keep PeriodConfiguration synchronized with the actual outline.
-       * The outline is the source of truth in this mode.
-       */
-      await tx.periodConfiguration.update({
-        where: {
-          academicYearId,
-        },
-
-        data: {
-          totalPeriodCount: validatedOutline.length,
-
-          sameOutlineForAllDays: true,
-
-          firstPeriodStartTime: validatedOutline[0].startTime,
-
-          defaultDurationMinutes: validatedOutline[0].durationMinutes,
-
-          defaultBreakMinutes:
-            validatedOutline[0].breakAfterMinutes ?? 0,
-        },
-      });
-
-      return {
-        academicYearId,
-        weekdays: uniqueWeekdays,
-        periodCount: validatedOutline.length,
-        periods: createdPeriods,
-      };
-    },   {
-    timeout: 15000,
-  });
-  }
-
-  /* ------------------------------------------------------------------------ */
-  /* Default configuration generation                                        */
+  /* Target outline                                                           */
   /* ------------------------------------------------------------------------ */
 
-  if (
-    !configuration.firstPeriodStartTime ||
-    !configuration.defaultDurationMinutes
-  ) {
-    throw new ApiError(
-      400,
-      'firstPeriodStartTime and defaultDurationMinutes are required to generate periods'
-    );
-  }
-
-  const totalPeriodCount = configuration.totalPeriodCount;
-
-  const duration = configuration.defaultDurationMinutes;
-
-  const breakMinutes = configuration.defaultBreakMinutes ?? 0;
-
-  const generatedOutline = [];
-
-  let currentStart = timeToMinutes(
-    configuration.firstPeriodStartTime
+  const { outline: targetOutline, fromRequest } = await resolveTargetOutline(
+    academicYearId,
+    configuration,
+    Boolean(sameOutlineForAllDays),
+    outline
   );
 
-  for (
-    let periodIndex = 1;
-    periodIndex <= totalPeriodCount;
-    periodIndex += 1
-  ) {
-    const startTime = minutesToTime(currentStart);
-
-    const endMinutes = currentStart + duration;
-
-    const endTime = minutesToTime(endMinutes);
-
-    generatedOutline.push({
-      periodIndex,
-      startTime,
-      endTime,
-    });
-
-    currentStart = endMinutes + breakMinutes;
-  }
-
   /* ------------------------------------------------------------------------ */
-  /* Existing period safety check                                             */
+  /* Build the plan: create / update / unchanged / obsolete                   */
   /* ------------------------------------------------------------------------ */
 
-  if (!replaceExisting) {
-    const existingPeriods = await prisma.period.findMany({
-      where: {
-        academicYearId,
-        weekday: {
-          in: uniqueWeekdays,
+  const existing = await prisma.period.findMany({
+    where: { academicYearId, weekday: { in: uniqueWeekdays } },
+    select: {
+      id: true,
+      weekday: true,
+      periodIndex: true,
+      startTime: true,
+      endTime: true,
+      _count: {
+        select: {
+          timetableEntries: true,
+          dateTimetableEntries: true,
+          attendanceSessions: true,
+          substitutions: true,
+          staffPeriodLeaves: true,
+          exceptionStartFor: true,
+          exceptionEndFor: true,
         },
       },
+    },
+  });
 
-      select: {
-        id: true,
-        weekday: true,
-        periodIndex: true,
+  const existingByKey = new Map(
+    existing.map((period) => [`${period.weekday}:${period.periodIndex}`, period])
+  );
+  const targetKeys = new Set();
 
-        _count: {
-          select: {
-            timetableEntries: true,
-            attendanceSessions: true,
-            staffPeriodLeaves: true,
-            substitutions: true,
-            dateTimetableEntries: true,
-          },
-        },
-      },
-    });
+  const toCreate = [];
+  const toUpdate = [];
+  let unchanged = 0;
 
-    const lockedPeriods = existingPeriods.filter(
-      (period) =>
-        period._count.timetableEntries > 0 ||
-        period._count.attendanceSessions > 0 ||
-        period._count.staffPeriodLeaves > 0 ||
-        period._count.substitutions > 0 ||
-        period._count.dateTimetableEntries > 0
-    );
+  for (const weekday of uniqueWeekdays) {
+    for (const item of targetOutline) {
+      const key = `${weekday}:${item.periodIndex}`;
+      targetKeys.add(key);
 
-    if (lockedPeriods.length > 0) {
-      const firstLocked = lockedPeriods[0];
+      const current = existingByKey.get(key);
 
-      throw new ApiError(
-        409,
-        `Cannot regenerate period ${firstLocked.periodIndex} on ${firstLocked.weekday} because it is already being used by timetable or attendance data`
-      );
-    }
-  }
-
-  /* ------------------------------------------------------------------------ */
-  /* Transaction                                                             */
-  /* ------------------------------------------------------------------------ */
-
-  return prisma.$transaction(async (tx) => {
-    if (replaceExisting) {
-      await tx.period.deleteMany({
-        where: {
+      if (!current) {
+        toCreate.push({
           academicYearId,
-          weekday: {
-            in: uniqueWeekdays,
-          },
-        },
-      });
-    }
-
-    const createdPeriods = [];
-
-    for (const weekday of uniqueWeekdays) {
-      for (const item of generatedOutline) {
-        const period = await tx.period.upsert({
-          where: {
-            academicYearId_weekday_periodIndex: {
-              academicYearId,
-              weekday,
-              periodIndex: item.periodIndex,
-            },
-          },
-
-          create: {
-            academicYearId,
-            weekday,
-            periodIndex: item.periodIndex,
-            startTime: item.startTime,
-            endTime: item.endTime,
-          },
-
-          update: {
-            startTime: item.startTime,
-            endTime: item.endTime,
-          },
+          weekday,
+          periodIndex: item.periodIndex,
+          startTime: item.startTime,
+          endTime: item.endTime,
         });
-
-        createdPeriods.push(period);
+      } else if (current.startTime !== item.startTime || current.endTime !== item.endTime) {
+        toUpdate.push({ id: current.id, startTime: item.startTime, endTime: item.endTime });
+      } else {
+        unchanged += 1;
       }
     }
+  }
 
-    return {
-      academicYearId,
-      weekdays: uniqueWeekdays,
-      periodCount: generatedOutline.length,
-      periods: createdPeriods,
-    }, {
-      timeout: 15000,
-    };
+  const obsolete = existing.filter(
+    (period) => !targetKeys.has(`${period.weekday}:${period.periodIndex}`)
+  );
+
+  const blocked = obsolete.filter((period) => hasProtectedData(countsOf(period)));
+  const removableWithTimetable = obsolete.filter((period) => {
+    const counts = countsOf(period);
+    return !hasProtectedData(counts) && hasTimetableData(counts);
   });
+  const removableClean = obsolete.filter((period) => {
+    const counts = countsOf(period);
+    return !hasProtectedData(counts) && !hasTimetableData(counts);
+  });
+
+  const plan = {
+    academicYearId,
+    weekdays: uniqueWeekdays,
+    periodCount: targetOutline.length,
+    summary: {
+      create: toCreate.length,
+      update: toUpdate.length,
+      unchanged,
+      remove: removableClean.length + removableWithTimetable.length,
+    },
+    // Surplus periods that still hold timetable entries. They are deleted
+    // together with those entries only if removeObsoleteTimetable is true.
+    requiresTimetableRemoval: removableWithTimetable.map(describeObsolete),
+    // Surplus periods that cannot be removed at all (attendance history etc).
+    blocked: blocked.map(describeObsolete),
+  };
+
+  plan.canApply =
+    plan.blocked.length === 0 &&
+    (plan.requiresTimetableRemoval.length === 0 || removeObsoleteTimetable === true);
+
+  if (dryRun) {
+    return { ...plan, dryRun: true };
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Guard rails                                                              */
+  /* ------------------------------------------------------------------------ */
+
+  if (blocked.length > 0) {
+    const first = blocked[0];
+    throw new ApiError(
+      409,
+      `Cannot remove period ${first.periodIndex} on ${first.weekday} because attendance, substitution, leave or exception data already uses it. Keep that period in the schedule, or clear that data first.`,
+      { code: 'PERIOD_IN_USE', blocked: plan.blocked }
+    );
+  }
+
+  if (removableWithTimetable.length > 0 && removeObsoleteTimetable !== true) {
+    throw new ApiError(
+      409,
+      'The new schedule has fewer periods than the current one and some of the removed periods already have timetable entries. Confirm to delete those timetable entries and continue.',
+      { code: 'TIMETABLE_ENTRIES_AFFECTED', requiresTimetableRemoval: plan.requiresTimetableRemoval }
+    );
+  }
+
+  /* ------------------------------------------------------------------------ */
+  /* Apply                                                                    */
+  /* ------------------------------------------------------------------------ */
+
+  const removedTimetable = { timetableEntries: 0, dateTimetableEntries: 0 };
+
+  await prisma.$transaction(
+    async (tx) => {
+      const obsoleteIds = obsolete.map((period) => period.id);
+
+      if (obsoleteIds.length > 0) {
+        const dateResult = await tx.dateSpecificTimetableEntry.deleteMany({
+          where: { periodId: { in: obsoleteIds } },
+        });
+        const entryResult = await tx.timetableEntry.deleteMany({
+          where: { periodId: { in: obsoleteIds } },
+        });
+
+        removedTimetable.dateTimetableEntries = dateResult.count;
+        removedTimetable.timetableEntries = entryResult.count;
+
+        await tx.period.deleteMany({ where: { id: { in: obsoleteIds } } });
+      }
+
+      for (const row of toUpdate) {
+        await tx.period.update({
+          where: { id: row.id },
+          data: { startTime: row.startTime, endTime: row.endTime },
+        });
+      }
+
+      if (toCreate.length > 0) {
+        await tx.period.createMany({ data: toCreate });
+      }
+
+      if (sameOutlineForAllDays) {
+        // The outline is the source of truth in this mode: keep the stored
+        // outline and the configuration synchronised with what was generated.
+        if (fromRequest) {
+          await persistOutline(tx, academicYearId, targetOutline);
+        }
+
+        await tx.periodConfiguration.update({
+          where: { academicYearId },
+          data: {
+            totalPeriodCount: targetOutline.length,
+            sameOutlineForAllDays: true,
+            firstPeriodStartTime: targetOutline[0].startTime,
+            defaultDurationMinutes: targetOutline[0].durationMinutes,
+            defaultBreakMinutes: targetOutline[0].breakAfterMinutes ?? 0,
+          },
+        });
+      }
+    },
+    { timeout: 30000 }
+  );
+
+  const periods = await prisma.period.findMany({
+    where: { academicYearId },
+    orderBy: [{ weekday: 'asc' }, { periodIndex: 'asc' }],
+  });
+
+  return {
+    ...plan,
+    dryRun: false,
+    applied: true,
+    removedTimetable,
+    periods,
+  };
 };
 
 /* -------------------------------------------------------------------------- */
