@@ -7,6 +7,7 @@ import {
   parseSchoolDateStrict,
 } from '../utils/date.js';
 import prisma from '../lib/prisma.js';
+import { getCurrentAcademicYear } from '../utils/academic-year.js';
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -36,42 +37,8 @@ const WEEKDAY_LABELS = {
   SUNDAY: 'Sunday',
 };
 
-/**
- * Picks the academic year staff should see.
- *
- * Admins often build the timetable in a year that is not (yet) flagged ACTIVE.
- * Requiring ACTIVE made the whole staff timetable fail with "No active
- * academic year found". Order of preference:
- *   1. the ACTIVE year
- *   2. the year whose dates contain today
- *   3. the most recent year that has timetable entries
- *   4. the most recent year
- */
-async function getActiveAcademicYear() {
-  const active = await prisma.academicYear.findFirst({
-    where: { status: 'ACTIVE' },
-    orderBy: { startDate: 'desc' },
-  });
-  if (active) return active;
-
-  const now = businessNow();
-  const current = await prisma.academicYear.findFirst({
-    where: { startDate: { lte: now }, endDate: { gte: now }, status: { not: 'COMPLETED' } },
-    orderBy: { startDate: 'desc' },
-  });
-  if (current) return current;
-
-  const withTimetable = await prisma.academicYear.findFirst({
-    where: { timetableEntries: { some: {} } },
-    orderBy: { startDate: 'desc' },
-  });
-  if (withTimetable) return withTimetable;
-
-  const latest = await prisma.academicYear.findFirst({ orderBy: { startDate: 'desc' } });
-  if (latest) return latest;
-
-  throw new Error('No active academic year found');
-}
+// Shared with the staff students service (see utils/academic-year.js).
+const getActiveAcademicYear = getCurrentAcademicYear;
 
 async function getStaffByUserId(userId) {
   const staff = await prisma.staff.findUnique({

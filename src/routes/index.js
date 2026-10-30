@@ -59,9 +59,11 @@ r.use('/notifications', placeholderRoutes);
 r.use('/subject-allocations', subjectAllocationRoutes);
 r.use('/assignments', staffAssignmentRoutes);
 r.use('/student-enrollments', studentEnrollmentRoutes);
-r.use('/staff', staffRoutes);
+// Specific /staff/* routes MUST be mounted before the generic /staff router,
+// otherwise GET /staff/students is captured by GET /staff/:id.
 r.use('/staff/timetable', staffTimetableRoutes);
 r.use("/staff/students", staffStudentsRoutes);
+r.use('/staff', staffRoutes);
 r.use(
   '/standards',
   crud('standard', {

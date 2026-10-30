@@ -33,7 +33,7 @@ const publicUser = (u) => {
   };
 };
 
-export const login = async (email, password) => {
+export const login = async (email, password, { days = refreshDays } = {}) => {
   const user = await prisma.user.findUnique({ where: { email }, include });
 
   if (
@@ -49,7 +49,7 @@ export const login = async (email, password) => {
     data: {
       tokenHash: hashToken(raw),
       userId: user.id,
-      expiresAt: new Date(Date.now() + refreshDays * 86400000),
+      expiresAt: new Date(Date.now() + days * 86400000),
     },
   });
 

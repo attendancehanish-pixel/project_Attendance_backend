@@ -21,4 +21,6 @@ export const accessSecret = process.env.JWT_ACCESS_SECRET || 'dev-access-secret'
 export const refreshSecret = process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret';
 export const accessMinutes = Number(process.env.ACCESS_TOKEN_MINUTES || 15);
 export const refreshDays = Number(process.env.REFRESH_TOKEN_DAYS || 7);
+// Mobile app sessions live longer (sliding: every refresh issues a fresh token).
+export const mobileRefreshDays = Number(process.env.MOBILE_REFRESH_TOKEN_DAYS || 30);
 export const resetMinutes = Number(process.env.PASSWORD_RESET_MINUTES || 30);
